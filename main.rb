@@ -26,6 +26,41 @@ class BuildVolume
 		@y = y
 		@z = z
 	end
+
+	def plan_movement(distance, current_posn, axis, settings)
+		movements = []
+		if(self.call(axis).outOfBound(current_posn + distance))
+			posn = current_posn
+			min_pt = self.call(axis).min_pt
+			max_pt = self.call(axis).max_pt
+			
+			movements << max_pt - posn
+			distance -= (max_pt - posn)
+			posn = max_pt
+
+			num_across = distance.div(max_pt - min_pt)
+			num_across.times do |i|
+				if posn == max_pt
+					movements << min_pt
+					distance -= (max_pt - min_pt)
+				else
+					movements << man_pt
+					distance -= (max_pt - min_pt)
+				end
+			end
+			
+			if posn == max_pt
+				movements << (max_pt - distance)
+			else
+				movements << (min_pt + distance)
+			end
+
+		else
+			movements << distance
+		end
+
+		return movements
+	end
 end
 
 class MidiNote
@@ -54,15 +89,15 @@ class MidiNote
 	end
 
 	def print_speed(axis, settings)
-		return self.frequency * 60.0 / settings.steps_per_mm[axis]
+		return self.frequency * 60.0 / settings.steps_per_mm.send(axis)
 	end
 
 	def self.print_speed(midi_note, axis, settings)
-		return self.frequency(midi_note) * 60.0 / settings.steps_per_mm[axis]
+		return MidiNote.frequency(midi_note) * 60.0 / settings.steps_per_mm.send(axis)
 	end
 
 	def self.print_distance(duration, midi_note, axis, settings)
-		return self.frequency(midi_note) / 60.0 * duration
+		return MidiNote.frequency(midi_note) / 60.0 * duration
 	end
 
 	def <=>(a_note)
@@ -113,8 +148,8 @@ def parse_midi(path)
 	# 	if e.is_a? MIDI::Tempo
 	# 		tempo = e
 	# 	end
-
-		if e.is_a? MIDI::NoteOn or e.is_a? MIDI::NoteOff
+		puts e.inspect
+		if (e.is_a? MIDI::NoteOn) || (e.is_a? MIDI::NoteOff)
 			if grouped_events.has_key? e.time_from_start
 				grouped_events[e.time_from_start] << e
 			else
@@ -172,44 +207,80 @@ def generate_gcode(midi_data, settings)
 
 	last_time = 0
 	switch_dir = {x:1, y:1}
+	puts "\n\n\n\n"
 
 	midi_data.each_pair do |time, notes|
+		puts "notes"
+		puts "------------------------------------"
+		puts notes.inspect
+		puts "===================================="
 		if last_time < time
 			time_elapsed = time - last_time
 			move_distance = {x:0, y:0}
+			
+			puts "\nactive notes"
+			puts "------------------------------------"
+			puts active_notes
+			puts "===================================="
 			active_notes.each do |active_note|
-				if active_note.is_a? MIDI::NoteOn or active_note.is_a? MIDI::NoteOff
+				#puts active_note.inspect
+				#if (active_note.is_a? MIDI::NoteOn) or (active_note.is_a? MIDI::NoteOff)
 					
-
 					if active_notes.has_key? :x
-						move_distance[:x] = MidiNote.print_distance(time_elapsed, active_notes[0].note, :x, settings) * switch_dir[:x]
-						current_posn[:x] += move_distance[:x]
-						if ((current_posn[:x] > (settings.build_volume.x.max_pt - safety_margin)) and switch_dir[:x] == 1) or ((current_posn[:x] < (settings.build_volume.x.min_pt + safety_margin)) and switch_dir[:x] == -1)
+						move_distance[:x] = MidiNote.print_distance(time_elapsed, active_notes[:x].note, :x, settings) * switch_dir[:x]
+
+						if ((current_posn[:x] + move_distance[:x] > (settings.build_volume.x.max_pt - safety_margin)) and switch_dir[:x] == 1) or ((current_posn[:x] < (settings.build_volume.x.min_pt + safety_margin)) and switch_dir[:x] == -1)
 							switch_dir[:x] = switch_dir[:x] * -1
 						end
+
+						current_posn[:x] += move_distance[:x]
 					end
 
 					if active_notes.has_key? :y
-						move_distance[:y] = MidiNote.print_distance(time_elapsed, active_notes[1].note, :y, settings) * switch_dir[:y]
-						current_posn[:y] += move_distance[:y]
+						move_distance[:y] = MidiNote.print_distance(time_elapsed, active_notes[:y].note, :y, settings) * switch_dir[:y]
+						
 						if ((current_posn[:y] > (settings.build_volume.y.max_pt - safety_margin)) and switch_dir[:y] == 1) or ((current_posn[:y] < (settings.build_volume.y.min_pt - safety_margin)) and switch_dir[:y] == -1)
 							switch_dir[:y] = switch_dir[:y] * -1
 						end
+
+						current_posn[:y] += move_distance[:y]
 					end
-				end
+				#end
 			end
+
+			print_speeds = {}
+			if(active_notes.has_key? :x)
+				puts "speed for note #{active_notes[:x].note} is #{MidiNote.print_speed(active_notes[:x].note, :x, settings)}"
+				print_speeds[:x] = MidiNote.print_speed(active_notes[:x].note, :x, settings)
+			else
+				print_speeds[:x] = 0
+			end
+
+			if(active_notes.has_key? :y)
+				puts "speed for note #{active_notes[:y].note} is #{MidiNote.print_speed(active_notes[:y].note, :y, settings)}"
+				print_speeds[:y] = MidiNote.print_speed(active_notes[:y].note, :y, settings)
+			else
+				print_speeds[:y] = 0
+			end
+			#print_speeds[:x] = active_notes.has_key? :x ? MidiNote.print_speed(active_notes[:x].note, :x, settings) : 0
+			#rint_speeds[:y] = active_notes.has_key? :y ? MidiNote.print_speed(active_notes[:y].note, :y, settings) : 0
 
 			combined_distance = Math.sqrt(move_distance[:x]**2 + move_distance[:y]**2)
-			combined_speed = combined_distance * move_distance[:x] / settings.steps_per_mm.x
-			if move_distance[:x] > 0 or move_distance[:y] > 0
-				gcode << Kernel.sprintf("G01 X%.10f Y%.10f Z0 F%.10f\n", current_posn[:x], current_posn[:y], combined_speed)
+			combined_speed = Math.sqrt(print_speeds[:x]**2 + print_speeds[:y]**2)
+
+			if (move_distance[:x] != 0) and (move_distance[:y] != 0) 
+				gcode << Kernel.sprintf("G1 X%.10f Y%.10f F%.10f\n", current_posn[:x], current_posn[:y], combined_speed)
+			elsif move_distance[:x] != 0
+				gcode << Kernel.sprintf("G1 X%.10f F%.10f\n", current_posn[:x], combined_speed)
+			elsif move_distance[:y] != 0
+				gcode << Kernel.sprintf("G1 Y%.10f F%.10f\n", current_posn[:y], combined_speed)
 			else
 				#G04 is dwell - basically pause
-				gcode << Kernel.sprintf("G04 P%0.4f\n", time_elapsed * 1000.0)
+				gcode << Kernel.sprintf("G4 P%0.4f\n", time_elapsed * 10.0)
 			end
-
-			last_time = time
-		else
+		end
+			#last_time = time
+		#else
 			notes.sort_by! { |note| note.note }
 			notes.reverse.each do |note|
 				if note.is_a? MIDI::NoteOn
@@ -223,14 +294,16 @@ def generate_gcode(midi_data, settings)
 					else
 					end
 				elsif note.is_a? MIDI::NoteOff
-					if active_notes.any? { |active_note| note.note == active_note.note }
-						active_notes.delete_if { |active_note| note.note == active_note.note }
+					if active_notes.any? { |key, active_note| note.note == active_note.note }
+						puts "Turning off a note #{note.note}"
+						active_notes.delete_if { |key, active_note| note.note == active_note.note }
 					else
 						raise "Tried to turn off a note that wasn't already playing"
 					end
 				end
 			end
-		end
+		#end
+		last_time = time
 	end
 
 	return gcode
